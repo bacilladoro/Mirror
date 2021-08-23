@@ -137,7 +137,6 @@ namespace Mirror.Weaver
             WeavingFailed = false;
             try
             {
-                Resolver = resolver;
                 CurrentAssembly = assembly;
 
                 // fix "No writer found for ..." error

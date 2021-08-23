@@ -172,7 +172,7 @@ namespace Mirror.Weaver
 
                 // create weaver with logger
                 weaver = new Weaver(new CompilationFinishedLogger());
-                return weaver.Weave(assembly, asmResolver);
+                return weaver.Weave(asmResolver, assembly);
             }
         }
     }
