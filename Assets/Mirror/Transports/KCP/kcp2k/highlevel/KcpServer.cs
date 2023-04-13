@@ -18,13 +18,13 @@ namespace kcp2k
         // events are readonly, set in constructor.
         // this ensures they are always initialized when used.
         // fixes https://github.com/MirrorNetworking/Mirror/issues/3337 and more
-        readonly Action<int> OnConnected;
-        readonly Action<int, ArraySegment<byte>, KcpChannel> OnData;
-        readonly Action<int> OnDisconnected;
-        readonly Action<int, ErrorCode, string> OnError;
+        protected readonly Action<int> OnConnected;
+        protected readonly Action<int, ArraySegment<byte>, KcpChannel> OnData;
+        protected readonly Action<int> OnDisconnected;
+        protected readonly Action<int, ErrorCode, string> OnError;
 
         // configuration
-        readonly KcpConfig config;
+        protected readonly KcpConfig config;
 
         // state
         protected Socket socket;
@@ -157,15 +157,7 @@ namespace kcp2k
                 if (socket.ReceiveFromNonBlocking(rawReceiveBuffer, out segment, ref newClientEP))
                 {
                     // set connectionId to hash from endpoint
-                    // NOTE: IPEndPoint.GetHashCode() allocates.
-                    //  it calls m_Address.GetHashCode().
-                    //  m_Address is an IPAddress.
-                    //  GetHashCode() allocates for IPv6:
-                    //  https://github.com/mono/mono/blob/bdd772531d379b4e78593587d15113c37edd4a64/mcs/class/referencesource/System/net/System/Net/IPAddress.cs#L699
-                    //
-                    // => using only newClientEP.Port wouldn't work, because
-                    //    different connections can have the same port.
-                    connectionId = newClientEP.GetHashCode();
+                    connectionId = Common.ConnectionHash(newClientEP);
                     return true;
                 }
             }
@@ -214,8 +206,12 @@ namespace kcp2k
             // afterwards we assign the peer.
             KcpServerConnection connection = new KcpServerConnection(newClientEP);
 
+            // generate a random cookie for this connection to avoid UDP spoofing.
+            // needs to be random, but without allocations to avoid GC.
+            uint cookie = Common.GenerateCookie();
+
             // set up peer with callbacks
-            KcpPeer peer = new KcpPeer(RawSendWrap, OnAuthenticatedWrap, OnDataWrap, OnDisconnectedWrap, OnErrorWrap, config);
+            KcpPeer peer = new KcpPeer(RawSendWrap, OnAuthenticatedWrap, OnDataWrap, OnDisconnectedWrap, OnErrorWrap, config, cookie);
 
             // assign peer to connection
             connection.peer = peer;
