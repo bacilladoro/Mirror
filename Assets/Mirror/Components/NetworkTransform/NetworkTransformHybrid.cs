@@ -9,10 +9,6 @@ namespace Mirror
     [AddComponentMenu("Network/Network Transform Hybrid")]
     public class NetworkTransformHybrid : NetworkTransformBase
     {
-        // FixedUpdate support to fix: https://github.com/MirrorNetworking/Mirror/pull/3989
-        public bool useFixedUpdate;
-        TransformSnapshot? pendingSnapshot;
-
         [Header("Additional Settings")]
         [Tooltip("If we only sync on change, then we need to correct old snapshots if more time than sendInterval * multiplier has elapsed.\n\nOtherwise the first move will always start interpolating from the last move sequence's time, which will make it stutter when starting every time.")]
         public float onlySyncOnChangeCorrectionMultiplier = 2;
@@ -70,16 +66,14 @@ namespace Mirror
         // update //////////////////////////////////////////////////////////////
         void Update()
         {
-            // if server then always sync to others.
-            if (isServer) UpdateServer();
-            // 'else if' because host mode shouldn't send anything to server.
-            // it is the server. don't overwrite anything there.
-            else if (isClient) UpdateClient();
+            if (updateMethod == UpdateMethod.Update)
+                DoUpdate();
         }
 
         void FixedUpdate()
         {
-            if (!useFixedUpdate) return;
+            if (updateMethod == UpdateMethod.FixedUpdate)
+                DoUpdate();
 
             if (pendingSnapshot.HasValue && !IsClientWithAuthority)
             {
@@ -91,6 +85,9 @@ namespace Mirror
 
         void LateUpdate()
         {
+            if (updateMethod == UpdateMethod.LateUpdate)
+                DoUpdate();
+
             // set dirty to trigger OnSerialize. either always, or only if changed.
             // It has to be checked in LateUpdate() for onlySyncOnChange to avoid
             // the possibility of Update() running first before the object's movement
@@ -101,6 +98,15 @@ namespace Mirror
                 if (!onlySyncOnChange || Changed(Construct()))
                     SetDirty();
             }
+        }
+
+        void DoUpdate()
+        {
+            // if server then always sync to others.
+            if (isServer) UpdateServer();
+            // 'else if' because host mode shouldn't send anything to server.
+            // it is the server. don't overwrite anything there.
+            else if (isClient) UpdateClient();
         }
 
         protected virtual void UpdateServer()
@@ -131,7 +137,7 @@ namespace Mirror
                     // interpolate & apply
                     TransformSnapshot computed = TransformSnapshot.Interpolate(from, to, t);
 
-                    if (useFixedUpdate)
+                    if (updateMethod == UpdateMethod.FixedUpdate)
                         pendingSnapshot = computed;
                     else
                         Apply(computed, to);
@@ -159,7 +165,7 @@ namespace Mirror
                     // interpolate & apply
                     TransformSnapshot computed = TransformSnapshot.Interpolate(from, to, t);
 
-                    if (useFixedUpdate)
+                    if (updateMethod == UpdateMethod.FixedUpdate)
                         pendingSnapshot = computed;
                     else
                         Apply(computed, to);
@@ -233,17 +239,12 @@ namespace Mirror
 
                 int startPosition = writer.Position;
 
+
                 if (syncPosition) writer.WriteVector3(snapshot.position);
-                if (syncRotation)
-                {
-                    // if smallest-three quaternion compression is enabled,
-                    // then we don't need baseline rotation since delta always
-                    // sends an absolute value.
-                    if (!compressRotation)
-                    {
-                        writer.WriteQuaternion(snapshot.rotation);
-                    }
-                }
+                // note: smallest-three compression sends absolute values.
+                // technically it doesn't need a baseline, but we still need to sync the initial spawn rotation.
+                // in other words: alwyas sync the initial rotation as full quaternion.
+                if (syncRotation) writer.WriteQuaternion(snapshot.rotation);
                 if (syncScale) writer.WriteVector3(snapshot.scale);
 
                 // save serialized as 'last' for next delta compression.
@@ -309,16 +310,7 @@ namespace Mirror
 
                     if (debugDraw) Debug.DrawLine(position.Value, position.Value + Vector3.up , Color.green, 10.0f);
                 }
-                if (syncRotation)
-                {
-                    // if smallest-three quaternion compression is enabled,
-                    // then we don't need baseline rotation since delta always
-                    // sends an absolute value.
-                    if (!compressRotation)
-                    {
-                        rotation = reader.ReadQuaternion();
-                    }
-                }
+                if (syncRotation) rotation = reader.ReadQuaternion();
                 if (syncScale) scale = reader.ReadVector3();
 
                 // save deserialized as 'last' for next delta compression.
@@ -326,6 +318,12 @@ namespace Mirror
                 if (syncPosition) Compression.ScaleToLong(position.Value, positionPrecision, out lastDeserializedPosition);
                 if (syncRotation && !compressRotation) Compression.ScaleToLong(rotation.Value, rotationPrecision, out lastDeserializedRotation);
                 if (syncScale) Compression.ScaleToLong(scale.Value, scalePrecision, out lastDeserializedScale);
+
+                // apply initial values.
+                // Mirror already syncs spawn position, but NT has a 'target' (i.e. child object)
+                // who's initial position we need to set as well.
+                if (isServer) OnClientToServerSync(position, rotation, scale);
+                else if (isClient) OnServerToClientSync(position, rotation, scale);
             }
             // unreliable delta: decompress against last full reliable state
             else
